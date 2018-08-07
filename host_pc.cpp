@@ -48,29 +48,62 @@
 #include <signal.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-
-enum Pair {
-	eWrite = 0,
-	eRead
-};
+#include <pthread.h>
+#include <unistd.h>
 
 #if defined(__linux__)
 #include <sys/eventfd.h>
 
-static void makeEventFDs(int* rw) {
-	rw[eWrite] = rw[eRead] =  eventfd(0, 0);
+typedef int EventFD;
+
+static EventFD makeEventFDs(EventFD* rw) {
+	return eventfd(0, 0);
 }
 
-#else
+static void eventFDWrite(EventFD e) {
+	eventfd_t v = 0;
+	(void) eventfd_write(e, &v);
+}
+
+static void eventFDWrite(EventFD e) {
+	eventfd_t v = 1;
+	(void) eventfd_write(e, v);
+}
+
+static int eventFDForSelect(EventFD e) {
+	return e;
+}
+
+#elif defined(__DARWIN__)
 
 #include <sys/ioctl.h>
 
-static void makeEventFDs(int* rw) {
-	socketpair(PF_LOCAL, SOCK_DGRAM, 0, rw);
+typedef struct {
+	int fds[2];
+} EventFD;
+
+static EventFD makeEventFDs() {
+	EventFD rw = { { -1, -1 } };
+	socketpair(PF_LOCAL, SOCK_DGRAM, 0, rw.fds);
 	u_long yes = 1;
 	/* wakeup sockets must be non-blocking */
-	ioctl(rw[0], FIONBIO, (u_long *)&yes);
-	ioctl(rw[1], FIONBIO, (u_long *)&yes);
+	ioctl(rw.fds[0], FIONBIO, (u_long *)&yes);
+	ioctl(rw.fds[1], FIONBIO, (u_long *)&yes);
+	return rw;
+}
+
+static void eventFDRead(EventFD e) {
+	char b[8] = { 0 };
+	(void) read(e.fds[1], b, sizeof(b));
+}
+
+static void eventFDWrite(EventFD e) {
+	char b[8] = { -1 };
+	(void) write(e.fds[0], b, sizeof(b));
+}
+
+static int eventFDForSelect(EventFD e) {
+	return e.fds[1];
 }
 
 #ifndef MSG_NOSIGNAL
@@ -79,13 +112,10 @@ static void makeEventFDs(int* rw) {
 
 #endif
 
-#include <pthread.h>
-#include <unistd.h>
 typedef int SOCKET;
 #define INVALID_SOCKET -1
 #define SOCKET_ERROR -1
-typedef char signalevent_buf[8];
-#define SignalEvent(x) do { signalevent_buf b = { -1 }; (void) write(x[eWrite], b, sizeof(b)); } while (0);
+#define SignalEvent(x) eventFDWrite(x)
 
 #endif
 
@@ -214,7 +244,7 @@ int32_t host_get_file_size(const char *filename)
         res = ftell(f);
       fclose(f);
     }
-  
+
   return res;
 }
 
@@ -293,8 +323,9 @@ uint32_t host_set_file(const char *filename, uint32_t offset, uint32_t len, byte
       // write data in 256-byte chunks
       byte buf[256];
       memset(buf, b, 256);
-      for(uint32_t i=0; i<len; i+=256) 
+      for(uint32_t i=0; i<len; i+=256) {
         res += fwrite(buf, i+256<len ? 256 : len-i, 1, f);
+	  }
     }
 
   // if we're not supposed to keep the file open then close it
@@ -330,20 +361,20 @@ static SOCKET   iface_socket[HOSTPC_NUM_SOCKET_CONN];
 static SOCKET set_up_listener(const char* pcAddress, int nPort)
 {
   u_long nInterfaceAddr = inet_addr(pcAddress);
-  if (nInterfaceAddr != INADDR_NONE) 
+  if (nInterfaceAddr != INADDR_NONE)
     {
       SOCKET sd = socket(AF_INET, SOCK_STREAM, 0);
 #ifndef _WIN32
       int i = 1;
       setsockopt(sd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
 #endif
-      if (sd != INVALID_SOCKET) 
+      if (sd != INVALID_SOCKET)
         {
           sockaddr_in sinInterface;
           sinInterface.sin_family = AF_INET;
           sinInterface.sin_addr.s_addr = nInterfaceAddr;
           sinInterface.sin_port = nPort;
-          if (bind(sd, (sockaddr*)&sinInterface, sizeof(sockaddr_in)) != SOCKET_ERROR) 
+          if (bind(sd, (sockaddr*)&sinInterface, sizeof(sockaddr_in)) != SOCKET_ERROR)
             {
               listen(sd, 1);
               return sd;
@@ -378,7 +409,7 @@ DWORD WINAPI host_input_thread(void *data)
       for(int i=0; i<HOSTPC_NUM_SOCKET_CONN; i++) socket_read_event[i] = WSACreateEvent();
     }
 #endif
-  
+
   // initialize stdin handle
   HANDLE stdIn = GetStdHandle(STD_INPUT_HANDLE);
 
@@ -387,22 +418,22 @@ DWORD WINAPI host_input_thread(void *data)
       int i, n = 0;
 
       if( inp_serial[0]<0 )
-        { 
+        {
           // ready to receive more data on console (primary input)
-          eventHandles[n++] = stdIn; 
+          eventHandles[n++] = stdIn;
         }
 
      if( accept_socket != INVALID_SOCKET )
-       eventHandles[n++] = socket_accept_event; 
+       eventHandles[n++] = socket_accept_event;
 
       for(i=0; i<HOSTPC_NUM_SOCKET_CONN; i++)
         if( iface_socket[i] != INVALID_SOCKET && inp_serial[i+1]<0 )
           {
             // ready to receive more data on this socket
-            eventHandles[n++] = socket_read_event[i]; 
+            eventHandles[n++] = socket_read_event[i];
           }
 
-      // adding this allows host_check_interrupts to signal this thread that 
+      // adding this allows host_check_interrupts to signal this thread that
       // an input has been read and we can accept more inputs now (otherwise
       // we may get stuck in WSAWaitForMultipleEvents even though more input
       // is available)
@@ -452,7 +483,7 @@ DWORD WINAPI host_input_thread(void *data)
                       send(iface_socket[i],s,strlen(s), 0);
                       s = "]\r\n";
                       send(iface_socket[i],s,strlen(s), 0);
-                      
+
                       //printf("Connected client to serial #%i\n", i+1);
                       WSAResetEvent(socket_read_event[i]);
                       WSAEventSelect(iface_socket[i], socket_read_event[i], FD_READ | FD_CLOSE);
@@ -465,7 +496,7 @@ DWORD WINAPI host_input_thread(void *data)
                   send(s,msg,strlen(msg), 0);
                   shutdown(s, 2);
                 }
-              
+
               WSAResetEvent(socket_accept_event);
             }
           else
@@ -488,7 +519,7 @@ DWORD WINAPI host_input_thread(void *data)
                         DWORD n;
                         inp_serial[i+1] = (byte) c;
                         //printf("Received %i on serial #%i\n", c, i+2);
-                        
+
                         // if no more data to read then reset the event
                         if( ioctlsocket(iface_socket[i], FIONREAD, &n)==0 && n==0 ) WSAResetEvent(socket_read_event[i]);
                       }
@@ -502,7 +533,7 @@ DWORD WINAPI host_input_thread(void *data)
 
 #else
 
-static int signalEvent[2];
+static EventFD signalEventFD;
 
 void *host_input_thread(void *data)
 {
@@ -535,23 +566,26 @@ void *host_input_thread(void *data)
 	if( iface_socket[i] != INVALID_SOCKET && inp_serial[i+1]<0 )
 	  {
 	    // ready to receive more data on socket
-	    FD_SET(iface_socket[i], &s_rd); 
+	    FD_SET(iface_socket[i], &s_rd);
 	    if( iface_socket[i]>=nfds ) nfds = iface_socket[i]+1;
 	  }
 
       if( accept_socket != INVALID_SOCKET )
 	{
           // ready to accept connection on socket
-	  FD_SET(accept_socket, &s_rd); 
+	  FD_SET(accept_socket, &s_rd);
 	  if( accept_socket>=nfds ) nfds = accept_socket+1;
 	}
 
-      // adding this allows host_check_interrupts to signal this thread that 
+      // adding this allows host_check_interrupts to signal this thread that
       // an input has been read and we can accept more inputs now (otherwise
       // we may get stuck in WSAWaitForMultipleEvents even though more input
       // is available)
-      FD_SET(signalEvent[eRead], &s_rd);
-      if( signalEvent[eRead]>=nfds ) nfds = signalEvent[eRead]+1;
+	  {
+		  int readFD = eventFDForSelect(signalEventFD);
+		  FD_SET(readFD, &s_rd);
+		  if( readFD>=nfds ) nfds = readFD+1;
+	  }
 
       // wait until we either
       // - get input on console (if we are ready to accept more)
@@ -561,12 +595,12 @@ void *host_input_thread(void *data)
       //   whether we are ready to accept more data
       if( select(nfds, &s_rd, NULL, NULL, NULL) >= 0 )
         {
-	  if( FD_ISSET(signalEvent[eRead], &s_rd) )
-	    {
-	      // clear the signal
-			signalevent_buf buf;
-			(void) read(signalEvent[eRead], buf, sizeof(buf));
-	    }
+			int readFD = eventFDForSelect(signalEventFD);
+			if( FD_ISSET(readFD, &s_rd) )
+			{
+				// clear the signal
+				eventFDRead(signalEventFD);
+			}
 
           if( FD_ISSET(fileno(stdin), &s_rd) )
 	    inp_serial[0] = Serial.read();
@@ -663,12 +697,12 @@ void host_check_interrupts()
 	if( ctrlC>0 )
 	  { c = 3; ctrlC--; }
 	else if( inp_serial[0]>=0 )
-	  { 
-	    c = inp_serial[0]; 
-	    
+	  {
+	    c = inp_serial[0];
+	
 	    // we have consumed the input => signal input thread to receive more
-	    inp_serial[0] = -1; 
-	    SignalEvent(signalEvent); 
+	    inp_serial[0] = -1;
+	    SignalEvent(signalEventFD);
 	  }
 
         // double ctrl-c on console quits emulator
@@ -689,11 +723,11 @@ void host_check_interrupts()
           if( i==SwitchSerial.getSelected() ) host_check_ctrlc(inp_serial[i]);
 
           (serial_receive_callbacks[i])(i, (byte) inp_serial[i]);
-          
+
           // we have consumed the input => signal input thread to receive more
           inp_serial[i] = -1;
-          SignalEvent(signalEvent); 
-          
+          SignalEvent(signalEventFD);
+
           prev_char_cycles[i] = timer_get_cycles();
         }
 }
@@ -708,7 +742,7 @@ void host_serial_setup(byte iface, uint32_t baud, uint32_t config, bool set_prim
   if( iface<HOSTPC_NUM_SOCKET_CONN+1 ) cycles_per_char[iface]  = (10*2000000)/baud;
 
   // switch the primary serial interface (if requested)
-  if( set_primary_interface ) SwitchSerial.select(iface); 
+  if( set_primary_interface ) SwitchSerial.select(iface);
 }
 
 
@@ -866,10 +900,10 @@ void host_setup()
   status_leds = 0;
   addr_leds = 0;
   stop_request = 0;
-  
+
   // open storage data file for mini file system
   storagefile = fopen("AltairStorage.dat", "r+b");
-  if( storagefile==NULL ) 
+  if( storagefile==NULL )
     {
       void *chunk = calloc(1024, 1);
       storagefile = fopen("AltairStorage.dat", "wb");
@@ -881,7 +915,7 @@ void host_setup()
           fwrite(chunk, HOST_STORAGESIZE-size, 1, storagefile);
           fclose(storagefile);
         }
-      
+
       storagefile = fopen("AltairStorage.dat", "r+b");
     }
 
@@ -896,7 +930,7 @@ void host_setup()
   // send CTRL-C to input instead of processing it (otherwise the
   // emulator would immediately quit if CTRL-C is pressed) and we
   // could not use CTRL-C to stop a running BASIC example.
-  // CTRL-C is handled in host_check_interrupts (above) such that 
+  // CTRL-C is handled in host_check_interrupts (above) such that
   // pressing it twice within 250ms will cause the emulator to terminate.
   DWORD mode;
   HANDLE hstdin = GetStdHandle(STD_INPUT_HANDLE);
@@ -907,7 +941,7 @@ void host_setup()
   signalEvent = CreateEvent(NULL, false, false, NULL);
 
   // create the input thread
-  DWORD id; 
+  DWORD id;
   HANDLE h = CreateThread(0, 0, host_input_thread, NULL, 0, &id);
   CloseHandle(h);
 #elif defined(__linux__) || defined(__DARWIN__)
@@ -917,14 +951,14 @@ void host_setup()
   signal(SIGINT, sig_handler);
 
   // create an event that can be sent to awaken the input thread
-  makeEventFDs(signalEvent);
+  signalEventFD = makeEventFDs();
 
   // create the input thread
   pthread_t id;
   pthread_create(&id, NULL, host_input_thread, 0);
   pthread_detach(id);
 #endif
-  
+
   // initialize random number generator
   srand((unsigned int) time(NULL));
 
