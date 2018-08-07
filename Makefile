@@ -1,10 +1,10 @@
 ifeq ($(OSTYPE),msys)
-  CFLAGS=-O3
+  CFLAGS=-O3 -g
   LFLAGS=-O3 -lws2_32
   OBJ=obj-msys
   EXT=.exe
 else
-  CFLAGS=-O3
+  CFLAGS=-O3 -g
   LFLAGS=-O3 -lncurses -lpthread
   OBJ=obj-linux
   EXT=
