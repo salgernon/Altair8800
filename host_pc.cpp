@@ -56,13 +56,13 @@
 
 typedef int EventFD;
 
-static EventFD makeEventFDs(EventFD* rw) {
+static EventFD makeEventFDs() {
 	return eventfd(0, 0);
 }
 
-static void eventFDWrite(EventFD e) {
+static void eventFDRead(EventFD e) {
 	eventfd_t v = 0;
-	(void) eventfd_write(e, &v);
+	(void) eventfd_read(e, &v);
 }
 
 static void eventFDWrite(EventFD e) {
