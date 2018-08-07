@@ -1,13 +1,17 @@
 ifeq ($(OSTYPE),msys)
-  CFLAGS=-O3 -g
+  CFLAGS=-O3
   LFLAGS=-O3 -lws2_32
   OBJ=obj-msys
   EXT=.exe
 else
+  UNAME_LC := $(shell uname -s | tr '[:upper:]' '[:lower:]')
   CFLAGS=-O3 -g
   LFLAGS=-O3 -lncurses -lpthread
-  OBJ=obj-linux
+  OBJ=obj-$(UNAME_LC)
   EXT=
+  ifeq ($(UNAME_LC),darwin)
+	CFLAGS += -D__DARWIN__
+  endif
 endif
 
 
@@ -32,7 +36,7 @@ $(OBJ)/Print.o: Arduino/Print.cpp
 	g++ $(CFLAGS) -c -o $(OBJ)/Print.o -I Arduino Arduino/Print.cpp
 
 clean:
-	rm -rf $(OBJ) Altair8800.exe
+	rm -rf $(OBJ) Altair8800$(EXT)
 
 deps:
 	@echo

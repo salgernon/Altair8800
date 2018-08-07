@@ -17,7 +17,7 @@
 // Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301  USA
 // -----------------------------------------------------------------------------
 
-#if defined(_WIN32) || defined(__linux__)
+#if defined(_WIN32) || defined(__linux__) || defined(__DARWIN__)
 
 #include <Arduino.h>
 #include <time.h>
@@ -48,13 +48,44 @@
 #include <signal.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+
+enum Pair {
+	eWrite = 0,
+	eRead
+};
+
+#if defined(__linux__)
 #include <sys/eventfd.h>
+
+static void makeEventFDs(int* rw) {
+	rw[eWrite] = rw[eRead] =  eventfd(0, 0);
+}
+
+#else
+
+#include <sys/ioctl.h>
+
+static void makeEventFDs(int* rw) {
+	socketpair(PF_LOCAL, SOCK_DGRAM, 0, rw);
+	u_long yes = 1;
+	/* wakeup sockets must be non-blocking */
+	ioctl(rw[0], FIONBIO, (u_long *)&yes);
+	ioctl(rw[1], FIONBIO, (u_long *)&yes);
+}
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+#endif
+
+#include <pthread.h>
 #include <unistd.h>
 typedef int SOCKET;
 #define INVALID_SOCKET -1
 #define SOCKET_ERROR -1
-static unsigned long long int signal_write_buf = 1;
-#define SignalEvent(x) write(x, &signal_write_buf, 8)==0
+typedef char signalevent_buf[8];
+#define SignalEvent(x) do { signalevent_buf b = { -1 }; (void) write(x[eWrite], b, sizeof(b)); } while (0);
 
 #endif
 
@@ -471,7 +502,7 @@ DWORD WINAPI host_input_thread(void *data)
 
 #else
 
-static int signalEvent;
+static int signalEvent[2];
 
 void *host_input_thread(void *data)
 {
@@ -519,8 +550,8 @@ void *host_input_thread(void *data)
       // an input has been read and we can accept more inputs now (otherwise
       // we may get stuck in WSAWaitForMultipleEvents even though more input
       // is available)
-      FD_SET(signalEvent, &s_rd);
-      if( signalEvent>=nfds ) nfds = signalEvent+1;
+      FD_SET(signalEvent[eRead], &s_rd);
+      if( signalEvent[eRead]>=nfds ) nfds = signalEvent[eRead]+1;
 
       // wait until we either
       // - get input on console (if we are ready to accept more)
@@ -530,11 +561,11 @@ void *host_input_thread(void *data)
       //   whether we are ready to accept more data
       if( select(nfds, &s_rd, NULL, NULL, NULL) >= 0 )
         {
-	  if( FD_ISSET(signalEvent, &s_rd) )
+	  if( FD_ISSET(signalEvent[eRead], &s_rd) )
 	    {
 	      // clear the signal
-	      byte buf[8]; 
-	      read(signalEvent, buf, 8)==0;
+			signalevent_buf buf;
+			(void) read(signalEvent[eRead], buf, sizeof(buf));
 	    }
 
           if( FD_ISSET(fileno(stdin), &s_rd) )
@@ -879,14 +910,14 @@ void host_setup()
   DWORD id; 
   HANDLE h = CreateThread(0, 0, host_input_thread, NULL, 0, &id);
   CloseHandle(h);
-#elif defined(__linux__)
+#elif defined(__linux__) || defined(__DARWIN__)
   // handle CTRL-C in sig_handler so only pressing it twice
   // will terminate the simulator (otherwise CTRL-C could not
   // be sent to the emulated program
   signal(SIGINT, sig_handler);
 
   // create an event that can be sent to awaken the input thread
-  signalEvent = eventfd(0, 0);
+  makeEventFDs(signalEvent);
 
   // create the input thread
   pthread_t id;
