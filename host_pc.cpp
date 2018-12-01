@@ -19,7 +19,6 @@
 
 #if defined(_WIN32) || defined(__linux__) || defined(__DARWIN__)
 
-#include <Arduino.h>
 #include <time.h>
 #include <string>
 #include "Altair8800.h"
@@ -118,6 +117,8 @@ typedef int SOCKET;
 #define SignalEvent(x) eventFDWrite(x)
 
 #endif
+
+#include <Arduino.h>
 
 byte data_leds;
 uint16_t status_leds;
@@ -748,8 +749,14 @@ void host_serial_setup(byte iface, uint32_t baud, uint32_t config, bool set_prim
 
 host_serial_receive_callback_tp host_serial_set_receive_callback(byte iface, host_serial_receive_callback_tp f)
 {
-  host_serial_receive_callback_tp old_f = serial_receive_callbacks[iface];
-  serial_receive_callbacks[iface] = f;
+  host_serial_receive_callback_tp old_f = NULL;
+
+  if( iface < HOSTPC_NUM_SOCKET_CONN+1 ) 
+    {
+      old_f = serial_receive_callbacks[iface];
+      serial_receive_callbacks[iface] = f;
+    }
+
   return old_f;
 }
 
