@@ -40,7 +40,7 @@ clean:
 
 deps:
 	@echo
-	@gcc -MM -x c++ Altair8800.ino *.cpp Arduino/Arduino.cpp -I . -I Arduino | sed "s/.*\:/\$$(OBJ)\/&/"
+	@gcc -MM -x c++ Altair8800.ino *.cpp Arduino/Arduino.cpp -I . -I Arduino $(CFLAGS) | sed "s/.*\:/\$$(OBJ)\/&/"
 	@echo
 
 

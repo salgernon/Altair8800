@@ -1,16 +1,18 @@
+#include <stdio.h>
+#include <string>
+#include <iostream>
+
+#include <sys/timeb.h>
+
+#include "Arduino.h"
+
+using namespace std;
+
 #ifdef _WIN32
 #include <conio.h>
 #include <Windows.h>
 #include <Wincon.h>
 #define FixNewline(s) s
-
-#include <stdio.h>
-#include <string>
-#include <iostream>
-#include <sys/timeb.h>
-using namespace std;
-
-#include "Arduino.h"
 
 int EnableANSI()
 {
